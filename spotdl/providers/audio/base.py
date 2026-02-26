@@ -93,13 +93,16 @@ class AudioProvider:
         self.search_query = search_query
         self.filter_results = filter_results
 
+        # Fallback to "best" so yt-dlp can pick an available format when preferred one is restricted/unavailable
         if self.output_format == "m4a":
             ytdl_format = "bestaudio[ext=m4a]/bestaudio/best"
         elif self.output_format == "opus":
             ytdl_format = "bestaudio[ext=webm]/bestaudio/best"
         else:
-            ytdl_format = "bestaudio"
+            # bestaudio/best: try audio-only first, then any best (ffmpeg will extract audio)
+            ytdl_format = "bestaudio/best"
 
+        # Use Android client first for YouTube to reduce 403 Forbidden errors (then fallback to web)
         yt_dlp_options = {
             "format": ytdl_format,
             "quiet": True,
@@ -109,7 +112,7 @@ class AudioProvider:
             "cookiefile": self.cookie_file,
             "outtmpl": str((get_temp_path() / "%(id)s.%(ext)s").resolve()),
             "retries": 5,
-            "extractor_args": {},
+            "extractor_args": {"youtube": {"player_client": ["android", "android_music", "web"]}},
         }
 
         if yt_dlp_args:
@@ -394,7 +397,8 @@ class AudioProvider:
                 return data
         except Exception as exception:
             logger.debug(exception)
-            raise AudioProviderError(f"YT-DLP download error - {url}") from exception
+            msg = str(exception).strip() or exception.__class__.__name__
+            raise AudioProviderError(f"YT-DLP download error - {url} | {msg}") from exception
 
         raise AudioProviderError(f"No metadata found for the provided url {url}")
 

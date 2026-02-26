@@ -41,8 +41,8 @@ class Spotdl:
 
     def __init__(
         self,
-        client_id: str,
-        client_secret: str,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
         user_auth: bool = False,
         cache_path: Optional[str] = None,
         no_cache: bool = False,
@@ -53,11 +53,15 @@ class Spotdl:
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         """
-        Initialize the Spotdl class
+        Initialize the Spotdl class.
+
+        Spotify client_id and client_secret are optional. If not set, metadata
+        is resolved via YouTube Music and Spotify's public oEmbed (no API key).
+        Set them only for user features (saved playlists, saved albums, etc.).
 
         ### Arguments
-        - client_id: Spotify client id
-        - client_secret: Spotify client secret
+        - client_id: Spotify client id (optional)
+        - client_secret: Spotify client secret (optional)
         - user_auth: If true, user will be prompted to authenticate
         - cache_path: Path to cache directory
         - no_cache: If true, no cache will be used
@@ -69,15 +73,19 @@ class Spotdl:
         if downloader_settings is None:
             downloader_settings = {}
 
-        # Initialize spotify client
-        SpotifyClient.init(
-            client_id=client_id,
-            client_secret=client_secret,
-            user_auth=user_auth,
-            cache_path=cache_path,
-            no_cache=no_cache,
-            headless=headless,
-        )
+        # Initialize Spotify client only when credentials are provided (optional)
+        if client_id and client_secret:
+            try:
+                SpotifyClient.init(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    user_auth=user_auth,
+                    cache_path=cache_path,
+                    no_cache=no_cache,
+                    headless=headless,
+                )
+            except Exception:
+                pass  # Metadata will use YTM + oEmbed
 
         # Initialize downloader
         self.downloader = Downloader(

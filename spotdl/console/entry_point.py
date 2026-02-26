@@ -103,9 +103,18 @@ def entry_point():
                 "Please use a VPN, change youtube-music to piped, or use other audio providers"
             )
 
-    # Initialize spotify client
-    SpotifyClient.init(**spotify_settings)
-    spotify_client = SpotifyClient()
+    # Initialize Spotify client only when credentials are set (optional; metadata uses YTM + oEmbed)
+    spotify_client = None
+    if spotify_settings.get("client_id") and spotify_settings.get("client_secret"):
+        try:
+            SpotifyClient.init(**spotify_settings)
+            spotify_client = SpotifyClient()
+        except SpotifyError:
+            spotify_client = None
+    else:
+        logger.debug(
+            "Spotify API credentials not set. Using YouTube Music and Spotify oEmbed for metadata."
+        )
 
     # If the application is frozen start web ui
     # or if the operation is `web`
@@ -143,7 +152,7 @@ def entry_point():
     downloader = Downloader(downloader_settings)
 
     def graceful_exit(_signal, _frame):
-        if spotify_settings["use_cache_file"]:
+        if spotify_client is not None and spotify_settings["use_cache_file"]:
             save_spotify_cache(spotify_client.cache)
 
         downloader.progress_handler.close()
@@ -181,7 +190,7 @@ def entry_point():
     end_time = time.perf_counter()
     logger.debug("Took %d seconds", end_time - start_time)
 
-    if spotify_settings["use_cache_file"]:
+    if spotify_client is not None and spotify_settings["use_cache_file"]:
         save_spotify_cache(spotify_client.cache)
 
     downloader.progress_handler.close()

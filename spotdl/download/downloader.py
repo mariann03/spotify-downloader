@@ -42,7 +42,7 @@ from spotdl.utils.ffmpeg import FFmpegError, convert, get_ffmpeg_path
 from spotdl.utils.formatter import create_file_name
 from spotdl.utils.lrc import generate_lrc
 from spotdl.utils.m3u import gen_m3u_files
-from spotdl.utils.metadata import MetadataError, embed_metadata
+from spotdl.utils.metadata import embed_metadata
 from spotdl.utils.search import gather_known_songs, reinit_song, songs_from_albums
 
 __all__ = [
@@ -830,9 +830,10 @@ class Downloader:
                     skip_album_art=self.settings["skip_album_art"],
                 )
             except Exception as exception:
-                raise MetadataError(
-                    "Failed to embed metadata to the song"
-                ) from exception
+                logger.warning(
+                    "Failed to embed metadata to the song (file was still saved): %s",
+                    exception,
+                )
 
             if self.settings["generate_lrc"]:
                 generate_lrc(song, output_file)

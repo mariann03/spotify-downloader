@@ -1,8 +1,6 @@
 """
-Module for creating Song objects by interacting with Spotify API
-or by parsing a query.
-
-To use this module you must first initialize the SpotifyClient.
+Module for creating Song objects by parsing a query.
+Uses YouTube Music for search and Spotify oEmbed (no API key) for Spotify URL metadata.
 """
 
 import concurrent.futures
@@ -20,12 +18,18 @@ from spotdl.types.artist import Artist
 from spotdl.types.playlist import Playlist
 from spotdl.types.saved import Saved
 from spotdl.types.song import Song, SongList
+from spotdl.utils.formatter import parse_duration
 from spotdl.utils.metadata import get_file_metadata
 from spotdl.utils.spotify import SpotifyClient, SpotifyError
+from spotdl.utils.spotify_metadata import get_spotify_metadata, SpotifyMetadataError
 
 __all__ = [
     "QueryError",
     "get_search_results",
+    "get_song_from_spotify_url",
+    "get_song_from_yt_url",
+    "get_song_from_ytm_search",
+    "get_songs_from_ytm_search",
     "parse_query",
     "get_simple_songs",
     "reinit_song",
@@ -56,6 +60,437 @@ def get_ytm_client() -> YTMusic:
     return client
 
 
+def _ytm_result_to_song(result: Dict, spotify_url: Optional[str] = None) -> Song:
+    """Build a Song from a YTM search result dict."""
+    artists = [a["name"] for a in result.get("artists") or []]
+    artist = artists[0] if artists else ""
+    duration_str = result.get("duration")
+    duration_sec = int(parse_duration(duration_str)) if duration_str else 0
+    video_id = result.get("videoId") or ""
+    ytm_url = f"https://music.youtube.com/watch?v={video_id}" if video_id else ""
+    url = spotify_url or ytm_url
+
+    return Song.from_missing_data(
+        name=result.get("title") or "",
+        artists=artists,
+        artist=artist,
+        genres=[],
+        disc_number=1,
+        disc_count=1,
+        album_name=result.get("album", {}).get("name") if result.get("album") else "",
+        album_artist=artist,
+        duration=duration_sec,
+        year=0,
+        date="",
+        track_number=1,
+        tracks_count=1,
+        song_id=video_id,
+        explicit=result.get("isExplicit") or False,
+        publisher="",
+        url=url,
+        cover_url=(
+            result.get("thumbnails", [{}])[-1].get("url")
+            if result.get("thumbnails")
+            else None
+        ),
+        download_url=ytm_url if video_id else None,
+    )
+
+
+def get_song_from_ytm_search(search_term: str) -> Song:
+    """
+    Resolve a search term to a single Song using YouTube Music (no Spotify API).
+
+    ### Arguments
+    - search_term: Query string (e.g. "Artist - Title").
+
+    ### Returns
+    - A Song with metadata and download_url from the first YTM result.
+
+    ### Raises
+    - QueryError: If no results found.
+    """
+    results = get_ytm_client().search(search_term, filter="songs", limit=5)
+    for r in results:
+        if r.get("videoId") and r.get("artists"):
+            return _ytm_result_to_song(r)
+    raise QueryError(f"No results found for: {search_term}")
+
+
+def get_songs_from_ytm_search(search_term: str, limit: int = 50) -> List[Song]:
+    """
+    Resolve a search term to a list of Songs using YouTube Music (no Spotify API).
+
+    ### Arguments
+    - search_term: Query string.
+    - limit: Max number of results.
+
+    ### Returns
+    - List of Song objects (may be empty).
+    """
+    results = get_ytm_client().search(search_term, filter="songs", limit=limit)
+    songs: List[Song] = []
+    for r in results:
+        if r.get("videoId") and r.get("artists"):
+            songs.append(_ytm_result_to_song(r))
+    return songs
+
+
+def _extract_youtube_video_id(url: str) -> Optional[str]:
+    """Extract video ID from YouTube or YouTube Music URL."""
+    url = url.strip()
+    if "music.youtube.com/watch" in url or "youtube.com/watch" in url:
+        if "?v=" in url:
+            vid = url.split("?v=", 1)[1].split("&")[0].strip()
+            return vid if vid else None
+        if "&v=" in url:
+            vid = url.split("&v=", 1)[1].split("&")[0].strip()
+            return vid if vid else None
+    if "youtu.be/" in url:
+        path = url.split("youtu.be/", 1)[1].split("?")[0].split("&")[0].strip()
+        return path if path else None
+    return None
+
+
+def get_song_from_yt_url(url: str) -> Song:
+    """
+    Resolve a YouTube or YouTube Music video URL to a Song (no Spotify API).
+
+    ### Arguments
+    - url: Full URL (music.youtube.com/watch?v=..., youtube.com/watch?v=..., youtu.be/...).
+
+    ### Returns
+    - Song with metadata from YTM and download_url set to the video URL.
+    """
+    video_id = _extract_youtube_video_id(url)
+    if not video_id:
+        raise QueryError(f"Invalid YouTube URL: {url}")
+    track_data = get_ytm_client().get_song(video_id)
+    if not track_data or "videoDetails" not in track_data:
+        raise QueryError(f"Could not get song data for: {url}")
+    vd = track_data["videoDetails"]
+    title = vd.get("title") or ""
+    author = vd.get("author") or ""
+    length = vd.get("lengthSeconds") or "0"
+    duration = int(length) if str(length).isdigit() else 0
+    ytm_url = f"https://music.youtube.com/watch?v={video_id}"
+    return Song.from_missing_data(
+        name=title,
+        artists=[author],
+        artist=author,
+        genres=[],
+        disc_number=1,
+        disc_count=1,
+        album_name="",
+        album_artist=author,
+        duration=duration,
+        year=0,
+        date="",
+        track_number=1,
+        tracks_count=1,
+        song_id=video_id,
+        explicit=False,
+        publisher="",
+        url=ytm_url,
+        download_url=ytm_url,
+        cover_url=(
+            vd.get("thumbnail", {}).get("thumbnails", [{}])[-1].get("url")
+            if vd.get("thumbnail")
+            else None
+        ),
+    )
+
+
+def get_song_from_spotify_url(spotify_track_url: str) -> Song:
+    """
+    Resolve a Spotify track URL to a Song using oEmbed + YouTube Music (no Spotify API).
+
+    ### Arguments
+    - spotify_track_url: Full Spotify track URL (open.spotify.com/track/...).
+
+    ### Returns
+    - Song with metadata from YTM and url set to the original Spotify URL.
+    """
+    meta = get_spotify_metadata(spotify_track_url)
+    title = meta["title"].strip()
+    if not title:
+        raise QueryError("Could not get title from Spotify URL")
+    song = get_song_from_ytm_search(title)
+    # Keep original Spotify URL in song.url for compatibility
+    return Song.from_missing_data(**{**song.json, "url": spotify_track_url})
+
+
+def get_album_from_spotify_url(spotify_album_url: str, fetch_songs: bool = True) -> Album:
+    """
+    Resolve a Spotify album URL using oEmbed + YouTube Music (no Spotify API).
+    """
+    meta = get_spotify_metadata(spotify_album_url)
+    title = meta["title"].strip()
+    if not title:
+        raise QueryError("Could not get title from Spotify album URL")
+    results = get_ytm_client().search(title, filter="albums", limit=3)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id:
+            continue
+        album = get_ytm_client().get_album(browse_id)
+        if album is None:
+            continue
+        ytm_url = f"https://music.youtube.com/album/{r.get('albumId', '')}" if r.get("albumId") else spotify_album_url
+        artist_name = album["artists"][0]["name"]
+        metadata = {
+            "artist": {"name": artist_name},
+            "name": album["title"],
+            "url": spotify_album_url,
+        }
+        songs = []
+        for track in album.get("tracks") or []:
+            artists = [a["name"] for a in track.get("artists") or []]
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=artists,
+                artist=artists[0] if artists else "",
+                album_name=metadata["name"],
+                album_artist=artist_name,
+                duration=track.get("duration_seconds", 0),
+                download_url=f"https://music.youtube.com/watch?v={track.get('videoId', '')}" if track.get("videoId") else None,
+            )
+            if fetch_songs and song.download_url:
+                try:
+                    song = get_song_from_ytm_search(f"{song.artist} - {song.name}")
+                except QueryError:
+                    pass
+            songs.append(song)
+        return Album(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No YouTube Music album found for: {title}")
+
+
+def get_playlist_from_spotify_url(spotify_playlist_url: str, fetch_songs: bool = True) -> Playlist:
+    """
+    Resolve a Spotify playlist URL using oEmbed + YouTube Music (no Spotify API).
+    """
+    meta = get_spotify_metadata(spotify_playlist_url)
+    title = meta["title"].strip()
+    if not title:
+        raise QueryError("Could not get title from Spotify playlist URL")
+    results = get_ytm_client().search(title, filter="playlists", limit=5)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id or not browse_id.startswith("VL"):
+            continue
+        playlist_id = browse_id[2:]  # VL + playlistId
+        playlist = get_ytm_client().get_playlist(playlist_id, None)  # type: ignore
+        if playlist is None:
+            continue
+        metadata = {
+            "description": playlist.get("description") or "",
+            "author_url": f"https://music.youtube.com/channel/{playlist['author']['id']}" if playlist.get("author") else "",
+            "author_name": playlist["author"]["name"] if playlist.get("author") else "",
+            "cover_url": playlist["thumbnails"][0]["url"] if playlist.get("thumbnails") else "",
+            "name": playlist["title"],
+            "url": spotify_playlist_url,
+        }
+        songs = []
+        for track in playlist.get("tracks") or []:
+            if not track.get("videoId") or track.get("isAvailable") is False:
+                continue
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=[a["name"] for a in track.get("artists") or []],
+                artist=track["artists"][0]["name"] if track.get("artists") else "",
+                album_name=track.get("album", {}).get("name") if track.get("album") else "",
+                duration=track.get("duration_seconds"),
+                explicit=track.get("isExplicit"),
+                download_url=f"https://music.youtube.com/watch?v={track['videoId']}",
+            )
+            if fetch_songs:
+                try:
+                    song = reinit_song(song)
+                except Exception:
+                    pass
+            songs.append(song)
+        return Playlist(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No YouTube Music playlist found for: {title}")
+
+
+def get_artist_from_spotify_url(spotify_artist_url: str, fetch_songs: bool = True) -> Artist:
+    """
+    Resolve a Spotify artist URL using oEmbed + YouTube Music (no Spotify API).
+    Returns top tracks and albums from YTM for this artist.
+    """
+    meta = get_spotify_metadata(spotify_artist_url)
+    title = meta["title"].strip()
+    if not title:
+        raise QueryError("Could not get title from Spotify artist URL")
+    results = get_ytm_client().search(title, filter="artists", limit=3)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id:
+            continue
+        artist_data = get_ytm_client().get_artist(browse_id)
+        if artist_data is None:
+            continue
+        songs = []
+        seen = set()
+        # Top tracks
+        for track in (artist_data.get("songs", {}).get("results") or [])[:50]:
+            if not track.get("videoId") or track.get("videoId") in seen:
+                continue
+            seen.add(track.get("videoId"))
+            artists = [a["name"] for a in track.get("artists") or []]
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=artists,
+                artist=artists[0] if artists else "",
+                album_name=track.get("album", {}).get("name") if track.get("album") else "",
+                duration=track.get("duration_seconds"),
+                download_url=f"https://music.youtube.com/watch?v={track.get('videoId', '')}",
+            )
+            if fetch_songs:
+                try:
+                    song = get_song_from_ytm_search(f"{song.artist} - {song.name}")
+                except QueryError:
+                    pass
+            songs.append(song)
+        if not songs:
+            continue
+        metadata = {
+            "name": artist_data.get("name", title),
+            "genres": artist_data.get("genres") or [],
+            "url": spotify_artist_url,
+            "albums": [],
+        }
+        return Artist(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No YouTube Music artist found for: {title}")
+
+
+def get_album_from_search_term(search_term: str, fetch_songs: bool = True) -> Album:
+    """Resolve an album by search term using YouTube Music (no Spotify API)."""
+    term = search_term.split(":", 1)[-1].strip() if ":" in search_term else search_term
+    results = get_ytm_client().search(term, filter="albums", limit=3)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id:
+            continue
+        album = get_ytm_client().get_album(browse_id)
+        if album is None:
+            continue
+        url = f"https://music.youtube.com/album/{r.get('albumId', '')}" if r.get("albumId") else ""
+        artist_name = album["artists"][0]["name"]
+        metadata = {
+            "artist": {"name": artist_name},
+            "name": album["title"],
+            "url": url,
+        }
+        songs = []
+        for track in album.get("tracks") or []:
+            artists = [a["name"] for a in track.get("artists") or []]
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=artists,
+                artist=artists[0] if artists else "",
+                album_name=metadata["name"],
+                album_artist=artist_name,
+                duration=track.get("duration_seconds", 0),
+                download_url=f"https://music.youtube.com/watch?v={track.get('videoId', '')}" if track.get("videoId") else None,
+            )
+            if fetch_songs and song.download_url:
+                try:
+                    song = get_song_from_ytm_search(f"{song.artist} - {song.name}")
+                except QueryError:
+                    pass
+            songs.append(song)
+        return Album(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No album found for: {term}")
+
+
+def get_playlist_from_search_term(search_term: str, fetch_songs: bool = True) -> Playlist:
+    """Resolve a playlist by search term using YouTube Music (no Spotify API)."""
+    term = search_term.split(":", 1)[-1].strip() if ":" in search_term else search_term
+    results = get_ytm_client().search(term, filter="playlists", limit=5)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id or not browse_id.startswith("VL"):
+            continue
+        playlist_id = browse_id[2:]
+        playlist = get_ytm_client().get_playlist(playlist_id, None)  # type: ignore
+        if playlist is None:
+            continue
+        metadata = {
+            "description": playlist.get("description") or "",
+            "author_url": f"https://music.youtube.com/channel/{playlist['author']['id']}" if playlist.get("author") else "",
+            "author_name": playlist["author"]["name"] if playlist.get("author") else "",
+            "cover_url": playlist["thumbnails"][0]["url"] if playlist.get("thumbnails") else "",
+            "name": playlist["title"],
+            "url": f"https://music.youtube.com/playlist?list={playlist_id}",
+        }
+        songs = []
+        for track in playlist.get("tracks") or []:
+            if not track.get("videoId") or track.get("isAvailable") is False:
+                continue
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=[a["name"] for a in track.get("artists") or []],
+                artist=track["artists"][0]["name"] if track.get("artists") else "",
+                album_name=track.get("album", {}).get("name") if track.get("album") else "",
+                duration=track.get("duration_seconds"),
+                explicit=track.get("isExplicit"),
+                download_url=f"https://music.youtube.com/watch?v={track['videoId']}",
+            )
+            if fetch_songs:
+                try:
+                    song = reinit_song(song)
+                except Exception:
+                    pass
+            songs.append(song)
+        return Playlist(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No playlist found for: {term}")
+
+
+def get_artist_from_search_term(search_term: str, fetch_songs: bool = True) -> Artist:
+    """Resolve an artist by search term using YouTube Music (no Spotify API)."""
+    term = search_term.split(":", 1)[-1].strip() if ":" in search_term else search_term
+    results = get_ytm_client().search(term, filter="artists", limit=3)
+    for r in results:
+        browse_id = r.get("browseId")
+        if not browse_id:
+            continue
+        artist_data = get_ytm_client().get_artist(browse_id)
+        if artist_data is None:
+            continue
+        songs = []
+        seen = set()
+        for track in (artist_data.get("songs", {}).get("results") or [])[:50]:
+            if not track.get("videoId") or track.get("videoId") in seen:
+                continue
+            seen.add(track.get("videoId"))
+            artists = [a["name"] for a in track.get("artists") or []]
+            song = Song.from_missing_data(
+                name=track.get("title", ""),
+                artists=artists,
+                artist=artists[0] if artists else "",
+                album_name=track.get("album", {}).get("name") if track.get("album") else "",
+                duration=track.get("duration_seconds"),
+                download_url=f"https://music.youtube.com/watch?v={track.get('videoId', '')}",
+            )
+            if fetch_songs:
+                try:
+                    song = get_song_from_ytm_search(f"{song.artist} - {song.name}")
+                except QueryError:
+                    pass
+            songs.append(song)
+        if not songs:
+            continue
+        metadata = {
+            "name": artist_data.get("name", term),
+            "genres": artist_data.get("genres") or [],
+            "url": f"https://music.youtube.com/channel/{browse_id}",
+            "albums": [],
+        }
+        return Artist(**metadata, songs=songs, urls=[s.url for s in songs])
+    raise QueryError(f"No artist found for: {term}")
+
+
 class QueryError(Exception):
     """
     Base class for all exceptions related to query.
@@ -64,7 +499,7 @@ class QueryError(Exception):
 
 def get_search_results(search_term: str) -> List[Song]:
     """
-    Creates a list of Song objects from a search term.
+    Creates a list of Song objects from a search term (uses YouTube Music, no Spotify API).
 
     ### Arguments
     - search_term: the search term to use
@@ -73,7 +508,7 @@ def get_search_results(search_term: str) -> List[Song]:
     - a list of Song objects
     """
 
-    return Song.list_from_search_term(search_term)
+    return get_songs_from_ytm_search(search_term)
 
 
 def parse_query(
@@ -219,12 +654,12 @@ def get_simple_songs(
                     ytm_list: SongList = create_ytm_album(
                         split_urls[0], fetch_songs=False
                     )
-                    spot_list = Album.from_url(split_urls[1], fetch_songs=False)
+                    spot_list = get_album_from_spotify_url(split_urls[1], fetch_songs=False)
                 elif ("open.spotify.com" in request and "playlist" in request) and (
                     "?list=PL" in request or "browse/VLPL" in request
                 ):
                     ytm_list = create_ytm_playlist(split_urls[0], fetch_songs=False)
-                    spot_list = Playlist.from_url(split_urls[1], fetch_songs=False)
+                    spot_list = get_playlist_from_spotify_url(split_urls[1], fetch_songs=False)
                 else:
                     raise QueryError(
                         f"URLs are not of the same type, {split_urls[0]} is not "
@@ -248,7 +683,7 @@ def get_simple_songs(
 
                     lists.append(spot_list)
         elif "open.spotify.com" in request and "track" in request:
-            songs.append(Song.from_url(url=request))
+            songs.append(get_song_from_spotify_url(request))
         elif "https://spotify.link/" in request:
             resp = requests.head(request, allow_redirects=True, timeout=10)
             full_url = resp.url
@@ -261,19 +696,19 @@ def get_simple_songs(
             )
             songs.extend(full_lists)
         elif "open.spotify.com" in request and "playlist" in request:
-            lists.append(Playlist.from_url(request, fetch_songs=False))
+            lists.append(get_playlist_from_spotify_url(request, fetch_songs=False))
         elif "open.spotify.com" in request and "album" in request:
-            lists.append(Album.from_url(request, fetch_songs=False))
+            lists.append(get_album_from_spotify_url(request, fetch_songs=False))
         elif "open.spotify.com" in request and "artist" in request:
-            lists.append(Artist.from_url(request, fetch_songs=False))
+            lists.append(get_artist_from_spotify_url(request, fetch_songs=False))
         elif "open.spotify.com" in request and "user" in request:
             lists.extend(get_all_user_playlists(request))
         elif "album:" in request:
-            lists.append(Album.from_search_term(request, fetch_songs=False))
+            lists.append(get_album_from_search_term(request, fetch_songs=False))
         elif "playlist:" in request:
-            lists.append(Playlist.from_search_term(request, fetch_songs=False))
+            lists.append(get_playlist_from_search_term(request, fetch_songs=False))
         elif "artist:" in request:
-            lists.append(Artist.from_search_term(request, fetch_songs=False))
+            lists.append(get_artist_from_search_term(request, fetch_songs=False))
         elif request == "saved":
             lists.append(Saved.from_url(request, fetch_songs=False))
         elif request == "all-user-playlists":
@@ -368,8 +803,10 @@ def songs_from_albums(albums: List[str]):
 
     songs: List[Song] = []
     for album_id in albums:
-        album = Album.from_url(album_id, fetch_songs=False)
-
+        if "open.spotify.com" in str(album_id) and "album" in str(album_id):
+            album = get_album_from_spotify_url(album_id, fetch_songs=False)
+        else:
+            album = Album.from_url(album_id, fetch_songs=False)
         songs.extend([Song.from_missing_data(**song.json) for song in album.songs])
 
     return songs

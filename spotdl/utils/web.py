@@ -47,7 +47,12 @@ from spotdl.utils.config import (
     get_spotdl_path,
 )
 from spotdl.utils.github import RateLimitError, get_latest_version, get_status
-from spotdl.utils.search import get_search_results
+from spotdl.utils.search import (
+    get_album_from_spotify_url,
+    get_artist_from_spotify_url,
+    get_playlist_from_spotify_url,
+    get_search_results,
+)
 
 __all__ = [
     "ALLOWED_ORIGINS",
@@ -316,6 +321,17 @@ def songs_from_url(url: str) -> List[Song]:
     ### Returns
     - returns a list with Song objects to be downloaded.
     """
+
+    if "open.spotify.com" in url:
+        if "playlist" in url:
+            playlist = get_playlist_from_spotify_url(url, fetch_songs=True)
+            return playlist.songs
+        if "album" in url:
+            album = get_album_from_spotify_url(url, fetch_songs=True)
+            return album.songs
+        if "artist" in url:
+            artist = get_artist_from_spotify_url(url, fetch_songs=True)
+            return artist.songs
 
     if "playlist" in url:
         playlist = Playlist.from_url(url)

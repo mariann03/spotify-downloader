@@ -297,6 +297,9 @@ def embed_cover(audio_file, song: Song, encoding: str):
     except Exception:
         return audio_file
 
+    if not cover_data:
+        return audio_file
+
     # Create the image object for the file type
     if encoding in ["flac", "ogg", "opus"]:
         picture = Picture()
@@ -386,12 +389,17 @@ def embed_lyrics(audio_file, song: Song, encoding: str):
                 ):
                     continue
 
-                minute, sec, millisecond = time_tag_vals
+                try:
+                    minute, sec, millisecond = int(time_tag_vals[0]), int(time_tag_vals[1]), int(time_tag_vals[2])
+                except (ValueError, IndexError):
+                    continue
                 time = to_ms(min=minute, sec=sec, ms=millisecond)
-                lrc_data.append((text, time))
+                if text is not None:
+                    lrc_data.append((text, time))
 
             audio_file.add(USLT(encoding=3, text=clean_lyrics))
-            audio_file.add(SYLT(encoding=3, text=lrc_data, format=2, type=1))
+            if lrc_data:
+                audio_file.add(SYLT(encoding=3, text=lrc_data, format=2, type=1))
         else:
             audio_file[tag_preset["lyrics"]] = song.lyrics
 

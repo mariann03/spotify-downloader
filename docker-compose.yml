@@ -1,6 +1,16 @@
-version: "3"
 services:
   spotdl:
-    image: "spotdl/spotify-downloader"
+    container_name: spotdl
+    build: .
+    image: spotdl-dev:latest
+    command: web --host 0.0.0.0 --web-use-output-dir
+    environment:
+      # - PUID=1000
+      # - PGID=1000
+      - TZ=America/Argentina/Buenos_Aires
+      # - UMASK=002
+    ports:
+      - 8800:8800
     volumes:
-      - .:/music
+      - ./music:/music
+    restart: unless-stopped
