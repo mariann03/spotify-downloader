@@ -3,6 +3,7 @@ Web module for the console.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import sys
@@ -11,6 +12,9 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 from uvicorn import Config, Server
 
 from spotdl._version import __version__
@@ -99,6 +103,30 @@ def web(web_settings: WebOptions, downloader_settings: DownloaderOptions):
     )
 
     app_state.api.include_router(router)
+
+    # Optional: require password when SPOTDL_WEB_PASSWORD env is set
+    web_password = os.environ.get("SPOTDL_WEB_PASSWORD")
+    if web_password:
+
+        class BasicAuthMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                auth = request.headers.get("Authorization")
+                if auth and auth.startswith("Basic "):
+                    try:
+                        decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                        _, pwd = decoded.split(":", 1)
+                        if pwd == web_password:
+                            return await call_next(request)
+                    except Exception:
+                        pass
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Basic realm=\"SpotDL\""},
+                    content="Authentication required",
+                )
+
+        app_state.api.add_middleware(BasicAuthMiddleware)
+        logger.info("Web UI password protection is enabled")
 
     # Add the CORS middleware
     app_state.api.add_middleware(

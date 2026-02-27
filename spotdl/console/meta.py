@@ -10,7 +10,7 @@ from typing import List
 from spotdl.download.downloader import Downloader
 from spotdl.types.song import Song
 from spotdl.utils.ffmpeg import FFMPEG_FORMATS
-from spotdl.utils.lrc import generate_lrc
+from spotdl.utils.lrc import generate_lrc, get_lrc_for_song
 from spotdl.utils.metadata import embed_metadata, get_file_metadata
 from spotdl.utils.search import QueryError, get_search_results, parse_query, reinit_song
 
@@ -55,36 +55,53 @@ def meta(query: List[str], downloader: Downloader) -> None:
         # metadata of the file, url is present in the file.
         song_meta = get_file_metadata(file, downloader.settings["id3_separator"])
 
-        # Check if song has metadata
-        # and if it has all the required fields
-        # if it has all of these fields, we can assume that the metadata is correct
+        # When file already has full metadata (including lyrics), skip unless we only need to write .lrc
         if song_meta and not downloader.settings["force_update_metadata"]:
-            if (
+            has_base_meta = (
                 song_meta.get("artist")
                 and song_meta.get("artists")
                 and song_meta.get("name")
-                and song_meta.get("lyrics")
                 and song_meta.get("album_art")
-            ):
+            )
+            has_lyrics = bool(song_meta.get("lyrics"))
+
+            if has_base_meta and has_lyrics:
                 logger.info("Song already has metadata: %s", file.name)
                 if downloader.settings["generate_lrc"]:
                     lrc_file = file.with_suffix(".lrc")
-                    if lrc_file.exists():
-                        logger.info("Lrc file already exists for %s", file.name)
-                        return None
+                    if not lrc_file.exists():
+                        song = Song.from_missing_data(
+                            name=song_meta["name"],
+                            artists=song_meta["artists"],
+                            artist=song_meta["artist"],
+                        )
+                        generate_lrc(song, file)
+                        if lrc_file.exists():
+                            logger.info("Saved lrc file for %s", song.display_name)
+                return None
 
-                    song = Song.from_missing_data(
-                        name=song_meta["name"],
-                        artists=song_meta["artists"],
-                        artist=song_meta["artist"],
+            # File has metadata but missing lyrics: fetch LRC and embed (no .lrc file needed unless --generate-lrc)
+            if has_base_meta and not has_lyrics:
+                logger.info("Song has metadata but no lyrics, fetching and embedding: %s", file.name)
+                song = Song.from_missing_data(
+                    name=song_meta["name"],
+                    artists=song_meta["artists"],
+                    artist=song_meta["artist"],
+                )
+                lrc_content = get_lrc_for_song(song)
+                if not lrc_content and file.with_suffix(".lrc").exists():
+                    lrc_content = file.with_suffix(".lrc").read_text(encoding="utf-8", errors="replace").strip() or None
+                if lrc_content:
+                    song.lyrics = lrc_content
+                    embed_metadata(
+                        file,
+                        song,
+                        id3_separator=downloader.settings["id3_separator"],
+                        skip_album_art=downloader.settings["skip_album_art"],
                     )
-
+                    logger.info("Embedded lyrics into %s", file.name)
+                if downloader.settings["generate_lrc"] and lrc_content:
                     generate_lrc(song, file)
-                    if lrc_file.exists():
-                        logger.info("Saved lrc file for %s", song.display_name)
-                    else:
-                        logger.info("Could not find lrc file for %s", song.display_name)
-
                 return None
 
         # Same as above
@@ -119,8 +136,7 @@ def meta(query: List[str], downloader: Downloader) -> None:
                 logger.error("Could not find metadata for %s", file.name)
                 return None
 
-        # Check if the song has lyric
-        # if not use downloader to find lyrics
+        # Get lyrics for embedding (always embed when available; prefer synced LRC)
         if song_meta is None or song_meta.get("lyrics") is None:
             logger.debug("Fetching lyrics for %s", song.display_name)
             song.lyrics = downloader.search_lyrics(song)
@@ -129,7 +145,14 @@ def meta(query: List[str], downloader: Downloader) -> None:
         else:
             song.lyrics = song_meta.get("lyrics")
 
-        # Apply metadata to the song
+        # Prefer LRC for embedding so MP3 gets USLT/SYLT (no need for separate .lrc file)
+        lrc_content = get_lrc_for_song(song)
+        if not lrc_content and file.with_suffix(".lrc").exists():
+            lrc_content = file.with_suffix(".lrc").read_text(encoding="utf-8", errors="replace").strip() or None
+        if lrc_content:
+            song.lyrics = lrc_content
+
+        # Apply metadata to the song (lyrics are always embedded when available)
         embed_metadata(
             file,
             song,
@@ -139,17 +162,13 @@ def meta(query: List[str], downloader: Downloader) -> None:
 
         logger.info("Applied metadata to %s", file.name)
 
+        # Optional: write separate .lrc file only when --generate-lrc
         if downloader.settings["generate_lrc"]:
             lrc_file = file.with_suffix(".lrc")
-            if lrc_file.exists():
-                logger.info("Lrc file already exists for %s", file.name)
-                return None
-
-            generate_lrc(song, file)
-            if lrc_file.exists():
-                logger.info("Saved lrc file for %s", song.display_name)
-            else:
-                logger.info("Could not find lrc file for %s", song.display_name)
+            if not lrc_file.exists():
+                generate_lrc(song, file)
+                if lrc_file.exists():
+                    logger.info("Saved lrc file for %s", song.display_name)
         return None
 
     async def pool_worker(file_path: Path) -> None:

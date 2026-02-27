@@ -40,7 +40,7 @@ from spotdl.utils.config import (
 )
 from spotdl.utils.ffmpeg import FFmpegError, convert, get_ffmpeg_path
 from spotdl.utils.formatter import create_file_name
-from spotdl.utils.lrc import generate_lrc
+from spotdl.utils.lrc import generate_lrc, get_lrc_for_song
 from spotdl.utils.m3u import gen_m3u_files
 from spotdl.utils.metadata import embed_metadata
 from spotdl.utils.search import gather_known_songs, reinit_song, songs_from_albums
@@ -821,6 +821,11 @@ class Downloader:
                     # Delete the files that were created by the post processor
                     for file_to_delete in files_to_delete:
                         Path(file_to_delete).unlink()
+
+            # Always prefer LRC for embedding when available (lyrics in MP3; .lrc file is optional)
+            lrc_content = get_lrc_for_song(song)
+            if lrc_content:
+                song.lyrics = lrc_content
 
             try:
                 embed_metadata(

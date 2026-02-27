@@ -13,7 +13,20 @@ from spotdl.types.song import Song
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_lrc", "remomve_lrc"]
+__all__ = ["generate_lrc", "get_lrc_for_song", "remomve_lrc"]
+
+
+def get_lrc_for_song(song: Song) -> str | None:
+    """
+    Return LRC lyrics string for the song (for embedding in audio).
+    Uses song.lyrics if already synced, otherwise fetches via syncedlyrics.
+    """
+    if song.lyrics and has_translation(song.lyrics):
+        return song.lyrics
+    try:
+        return syncedlyrics_search(song.display_name)
+    except Exception:
+        return None
 
 
 def generate_lrc(song: Song, output_file: Path):
@@ -24,14 +37,7 @@ def generate_lrc(song: Song, output_file: Path):
     - song: Song object
     - output_file: Path to the output file
     """
-
-    if song.lyrics and has_translation(song.lyrics):
-        lrc_data = song.lyrics
-    else:
-        try:
-            lrc_data = syncedlyrics_search(song.display_name)
-        except Exception:
-            lrc_data = None
+    lrc_data = get_lrc_for_song(song)
 
     if lrc_data:
         Lyrics(lrc_data).save_lrc_file(
