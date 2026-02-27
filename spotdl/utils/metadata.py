@@ -494,17 +494,33 @@ def get_file_metadata(path: Path, id3_separator: str = "/") -> Optional[Dict[str
             elif key in ["tracknumber", "trackcount"]:
                 count = val.text[0].split(id3_separator)
                 if len(count) == 2:
-                    song_meta["track_number"] = int(count[0])
-                    song_meta["tracks_count"] = int(count[1])
+                    try:
+                        song_meta["track_number"] = int(count[0]) if count[0] and str(count[0]).strip() not in ("", "None") else None
+                    except (ValueError, TypeError):
+                        song_meta["track_number"] = None
+                    try:
+                        song_meta["tracks_count"] = int(count[1]) if count[1] and str(count[1]).strip() not in ("", "None") else None
+                    except (ValueError, TypeError):
+                        song_meta["tracks_count"] = None
                 else:
-                    song_meta["track_number"] = val.text[0]
+                    try:
+                        song_meta["track_number"] = int(val.text[0]) if val.text[0] and str(val.text[0]).strip() not in ("", "None") else None
+                    except (ValueError, TypeError):
+                        song_meta["track_number"] = None
             elif key in ["discnumber", "disccount"]:
                 count = val.text[0].split(id3_separator)
                 if len(count) == 2:
-                    song_meta["disc_number"] = int(count[0])
-                    song_meta["disc_count"] = int(count[1])
+                    try:
+                        song_meta["disc_number"] = int(count[0]) if count[0] and str(count[0]).strip() not in ("", "None") else None
+                        song_meta["disc_count"] = int(count[1]) if count[1] and str(count[1]).strip() not in ("", "None") else None
+                    except (ValueError, TypeError):
+                        song_meta["disc_number"] = None
+                        song_meta["disc_count"] = None
                 else:
-                    song_meta["disc_number"] = val.text[0]
+                    try:
+                        song_meta["disc_number"] = int(val.text[0]) if val.text[0] and str(val.text[0]).strip() not in ("", "None") else None
+                    except (ValueError, TypeError):
+                        song_meta["disc_number"] = None
             elif key == "artist":
                 artists_val: str = (
                     val.text[0] if isinstance(val.text, list) else val.text

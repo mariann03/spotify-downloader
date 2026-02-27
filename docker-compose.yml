@@ -9,7 +9,6 @@ services:
       # - PGID=1000
       - TZ=America/Argentina/Buenos_Aires
       # - UMASK=002
-      # Contraseña para acceder a la web (opcional). Ej: SPOTDL_WEB_PASSWORD=tu_contraseña
       - SPOTDL_WEB_PASSWORD=${SPOTDL_WEB_PASSWORD}
     ports:
       - 8800:8800
