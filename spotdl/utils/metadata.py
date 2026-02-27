@@ -196,14 +196,14 @@ def embed_metadata(
     except Exception as exc:
         raise MetadataError("Unable to load file.") from exc
 
-    # Embed basic metadata
+    # Embed basic metadata (avoid None for tags that don't accept it)
     audio_file[tag_preset["artist"]] = song.artists
     audio_file[tag_preset["albumartist"]] = (
         song.album_artist if song.album_artist else song.artist
     )
     audio_file[tag_preset["title"]] = song.name
-    audio_file[tag_preset["date"]] = song.date
-    audio_file[tag_preset["encodedby"]] = song.publisher
+    audio_file[tag_preset["date"]] = song.date or ""
+    audio_file[tag_preset["encodedby"]] = song.publisher or ""
 
     # Embed metadata that isn't always present
     album_name = song.album_name
@@ -226,7 +226,8 @@ def embed_metadata(
         audio_file["tracktotal"] = str(song.tracks_count)
         audio_file["tracknumber"] = str(song.track_number)
         audio_file["woas"] = song.url
-        audio_file["isrc"] = song.isrc
+        if song.isrc:
+            audio_file["isrc"] = song.isrc
     elif encoding == "m4a":
         audio_file[tag_preset["discnumber"]] = [(song.disc_number, song.disc_count)]
         audio_file[tag_preset["tracknumber"]] = [(song.track_number, song.tracks_count)]
@@ -235,7 +236,8 @@ def embed_metadata(
     elif encoding == "mp3":
         audio_file["tracknumber"] = f"{str(song.track_number)}/{str(song.tracks_count)}"
         audio_file["discnumber"] = f"{str(song.disc_number)}/{str(song.disc_count)}"
-        audio_file["isrc"] = song.isrc
+        if song.isrc:
+            audio_file["isrc"] = song.isrc
 
     # Mp3 specific encoding
     if encoding == "mp3":
@@ -377,25 +379,25 @@ def embed_lyrics(audio_file, song: Song, encoding: str):
         if encoding == "mp3":
             lrc_data = []
             for line in lyrics.splitlines():
-                time_tag = line.split("]", 1)[0] + "]"
-                text = line.replace(time_tag, "")
-
-                time_tag = time_tag.replace("[", "")
-                time_tag = time_tag.replace("]", "")
-                time_tag = time_tag.replace(".", ":")
-                time_tag_vals = time_tag.split(":")
-                if len(time_tag_vals) != 3 or any(
-                    not isinstance(tag, int) for tag in time_tag_vals
-                ):
+                if "]" not in line:
                     continue
+                time_tag = line.split("]", 1)[0] + "]"
+                text = line.replace(time_tag, "").strip()
 
+                time_tag = time_tag.replace("[", "").replace("]", "").replace(".", ":")
+                time_tag_vals = time_tag.split(":")
+                if len(time_tag_vals) != 3:
+                    continue
                 try:
-                    minute, sec, millisecond = int(time_tag_vals[0]), int(time_tag_vals[1]), int(time_tag_vals[2])
+                    minute, sec, millisecond = (
+                        int(time_tag_vals[0]),
+                        int(time_tag_vals[1]),
+                        int(time_tag_vals[2]),
+                    )
                 except (ValueError, IndexError):
                     continue
                 time = to_ms(min=minute, sec=sec, ms=millisecond)
-                if text is not None:
-                    lrc_data.append((text, time))
+                lrc_data.append((text or "", time))
 
             audio_file.add(USLT(encoding=3, text=clean_lyrics))
             if lrc_data:
@@ -626,17 +628,21 @@ def embed_wav_file(output_file: Path, song: Song):
     if song.cover_url:
         try:
             cover_data = requests.get(song.cover_url, timeout=10).content
-            audio.tags.add(  # type: ignore
-                APIC(
-                    encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover_data
+            if cover_data:
+                audio.tags.add(  # type: ignore
+                    APIC(
+                        encoding=3,
+                        mime="image/jpeg",
+                        type=3,
+                        desc="Cover",
+                        data=cover_data,
+                    )
                 )
-            )
         except Exception:
             pass
 
     if song.lyrics:
         # Check if the lyrics are in lrc format
-        # using regex on the first 5 lines
         lrc_lines = song.lyrics.splitlines()[:5]
         lrc_lines = [line for line in lrc_lines if line and LRC_REGEX.match(line)]
 
@@ -646,23 +652,26 @@ def embed_wav_file(output_file: Path, song: Song):
             lrc_data = []
             clean_lyrics = remomve_lrc(song.lyrics)
             for line in song.lyrics.splitlines():
-                time_tag = line.split("]", 1)[0] + "]"
-                text = line.replace(time_tag, "")
-
-                time_tag = time_tag.replace("[", "")
-                time_tag = time_tag.replace("]", "")
-                time_tag = time_tag.replace(".", ":")
-                time_tag_vals = time_tag.split(":")
-                if len(time_tag_vals) != 3 or any(
-                    not isinstance(tag, int) for tag in time_tag_vals
-                ):
+                if "]" not in line:
                     continue
-
-                minute, sec, millisecond = time_tag_vals
+                time_tag = line.split("]", 1)[0] + "]"
+                text = line.replace(time_tag, "").strip()
+                time_tag = time_tag.replace("[", "").replace("]", "").replace(".", ":")
+                time_tag_vals = time_tag.split(":")
+                if len(time_tag_vals) != 3:
+                    continue
+                try:
+                    minute, sec, millisecond = (
+                        int(time_tag_vals[0]),
+                        int(time_tag_vals[1]),
+                        int(time_tag_vals[2]),
+                    )
+                except (ValueError, IndexError):
+                    continue
                 time = to_ms(min=minute, sec=sec, ms=millisecond)
-                lrc_data.append((text, time))
-
+                lrc_data.append((text or "", time))
             audio.tags.add(USLT(encoding=3, text=clean_lyrics))  # type: ignore
-            audio.tags.add(SYLT(encoding=3, text=lrc_data, format=2, type=1))  # type: ignore
+            if lrc_data:
+                audio.tags.add(SYLT(encoding=3, text=lrc_data, format=2, type=1))  # type: ignore
 
     audio.save()
